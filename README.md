@@ -1,5 +1,5 @@
 + ### 1. This pipeline will work with Bit-Bucket
-+ ### 2. Change the command at 19 with your bucket names and replace placeholders below
++ ### 2. Change the command at with your bucket names and replace placeholders below
 + ### 3. Configure environment variables in your Bitbucket project settings
 + ### 4. Update the AWS region as needed
 

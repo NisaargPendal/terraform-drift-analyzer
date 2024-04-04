@@ -1,0 +1,93 @@
+# 1. This pipeline will work with Bit-Bucket
+# 2. Change the command at 19 with your bucket name if You are using AWS S3 !!
+# 3. You need to provide 3 things after completing  2nd instruction AWS_ACCESS_KEY_ID , AWS_SECRET_ACCESS_KEY ,  SLACK_WEBHOOK_URL
+
+image: snyk/driftctl
+
+pipelines:
+  branches:
+    driftctl:
+    - step:
+        name: Snyk Driftctl Scan
+        script:
+        - echo ${BITBUCKET_STEP_UUID//[\{\}]} > artifact_uuid.txt
+        - export DCTL_TF_PROVIDER_VERSION=5.33.0
+        - export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+        - export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+        - export AWS_REGION=eu-central-1
+        - export DCTL_OUTPUT=json://results.json
+        - "set +e\ndriftctl scan --from tfstate+s3://<Your_company_name>-terraform-state/terraform.tfstate --from tfstate+s3://<Your_company_name>-terraform-access/terraform.tfstate # This command should change \nSCAN_EXIT_CODE=$?\nset -e\necho $SCAN_EXIT_CODE\nif [ $SCAN_EXIT_CODE -eq 0 ] || [ $SCAN_EXIT_CODE -eq 1 ]; then\n  echo \"Scan completed successfully with exit code: $SCAN_EXIT_CODE\"\nelse\n  echo \"Scan failed with exit code: $SCAN_EXIT_CODE\"\n  exit $SCAN_EXIT_CODE\nfi\n"
+        artifacts:
+        - results.json
+        - artifact_uuid.txt
+
+    - step:
+        name: Send to Slack
+        image: ubuntu:latest
+        script:
+        - |
+          export ARTIFACT_UUID=$(cat artifact_uuid.txt)
+          apt update && apt install jq curl -y
+          export SCAN_DATE=$(date +"%d %B %H:%M %Z")
+          export DOWNLOAD_LINK="https://bitbucket.org/$BITBUCKET_REPO_OWNER/$BITBUCKET_REPO_SLUG/pipelines/results/$BITBUCKET_BUILD_NUMBER/steps/%7B$ARTIFACT_UUID%7D/artifacts"
+          # Check if results.json exists
+          if [ -f "results.json" ]; then
+            export TOTAL_RESOURCES=$(jq '.summary.total_resources' results.json)
+            export MANAGED_RESOURCES=$(jq '.summary.total_managed' results.json)
+            export UNMANAGED_RESOURCES=$(jq '.summary.total_unmanaged' results.json)
+
+            # Check if there are any unmanaged resources
+            if jq -e '.unmanaged | length > 0' results.json > /dev/null; then
+              UNMANAGED_DETAILS=$(
+                jq -r '.unmanaged | group_by(.type) | map({type: .[0].type, resources: [.[].id]}) | map("\n\(.type)\n\(.resources | map("  - \(.)")|join("\n"))")[]' results.json
+              )
+
+              # Build Slack message
+              SLACK_MESSAGE='{
+              "attachments": [
+              {
+                "blocks": [
+                  {
+                    "type": "header",
+                    "text": {
+                      "type": "plain_text",
+                      "text": "<Your_company_name> - 331454485377\nDriftctl Scan Results: '$SCAN_DATE'"
+                  }
+                  },
+                  {
+                    "type": "divider"
+                  },
+                  {
+                    "type": "section",
+                    "text": {
+                      "type": "mrkdwn",
+                      "text": "*Total Resources:* '$TOTAL_RESOURCES'\n*Managed Resources:* '$MANAGED_RESOURCES'\n*Unmanaged Resources:* '$UNMANAGED_RESOURCES'\n\n*Unmanaged Details:*\n```'$UNMANAGED_DETAILS'```"
+                    }
+                  },
+                  {
+                    "type": "actions",
+                    "elements": [
+                      {
+                        "type": "button",
+                        "text": {
+                          "type": "plain_text",
+                          "text": "Download Report",
+                          "emoji": true
+                        },
+                        "url": "'$DOWNLOAD_LINK'",
+                        "style": "primary"
+                      }
+                    ]
+                  }
+                ],
+                "color": "3498DB"
+                }
+              ]
+              }'
+              curl -X POST -H 'Content-type: application/json' --data "$SLACK_MESSAGE" "$SLACK_WEBHOOK_URL"
+            else
+              echo "No unmanaged resources found. Skipping Slack Notification."
+            fi
+          else
+            echo "results.json not found. Skipping Slack Notification."
+          fi
